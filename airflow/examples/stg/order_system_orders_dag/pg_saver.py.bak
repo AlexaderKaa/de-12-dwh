@@ -1,0 +1,78 @@
+from datetime import datetime
+from typing import Any
+import json
+from lib.dict_util import json2str
+from psycopg import Connection
+
+
+class PgSaver:
+
+    def save_object(self, conn: Connection, id: str, update_ts: datetime, val: Any):
+        # Преобразуем значение в строку
+        str_val = json2str(val)
+
+        # Извлекаем необходимые данные из val
+        restaurant = val.get('restaurant')
+        date = val.get('date')
+        user = val.get('user')
+        order_items = val.get('order_items')
+        bonus_payment = val.get('bonus_payment')
+        cost = val.get('cost')
+        payment = val.get('payment')
+        bonus_grant = val.get('bonus_grant')
+        statuses = val.get('statuses')
+        final_status = val.get('final_status')
+
+        # Преобразуем вложенные структуры данных в строки, если необходимо
+        order_items_str = json2str(order_items) if isinstance(order_items, (dict, list)) else order_items
+        statuses_str = json2str(statuses) if isinstance(statuses, (dict, list)) else statuses
+        
+        # Преобразуем вложенные структуры данных в строки, если это словари или списки
+        # order_items_str = json.dumps(order_items) if isinstance(order_items, (dict, list)) else order_items
+        # statuses_str = json.dumps(statuses) if isinstance(statuses, (dict, list)) else statuses
+        
+        print(type(order_items_str))
+        print(order_items_str)
+        print(type(statuses_str))
+        print(statuses_str)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                    INSERT INTO stg.ordersystem_orders(
+                      object_id, restaurant_id, order_date, user_id, order_items,
+                      bonus_payment, order_cost, payment, bonus_grant,
+                      statuses, final_status, update_ts
+                    )
+                    VALUES (%(id)s, %(restaurant)s, %(date)s, %(user)s,  %(order_items)s, 
+                            %(bonus_payment)s, %(cost)s, %(payment)s, %(bonus_grant)s, 
+                            %(statuses)s, %(final_status)s, %(update_ts)s)
+                    ON CONFLICT (object_id) DO UPDATE
+                    SET
+                        restaurant_id = EXCLUDED.restaurant_id,
+                        user_id = EXCLUDED.user_id,
+                        order_items = EXCLUDED.order_items,
+                        bonus_payment = EXCLUDED.bonus_payment,
+                        order_cost = EXCLUDED.order_cost,
+                        payment = EXCLUDED.payment,
+                        bonus_grant = EXCLUDED.bonus_grant,
+                        statuses = EXCLUDED.statuses,
+                        final_status = EXCLUDED.final_status,
+                        update_ts = EXCLUDED.update_ts;
+                """,
+                {
+                    "id": id,
+                    "restaurant": restaurant,
+                    "date": date,
+                    "user": user,
+                    "order_items": order_items_str,
+                    "bonus_payment": bonus_payment,
+                    "cost": cost,
+                    "payment": payment,
+                    "bonus_grant": bonus_grant,
+                    "statuses": statuses_str,
+                    "final_status": final_status,
+                    "update_ts": update_ts
+                }
+            )
+

@@ -1,0 +1,150 @@
+from logging import Logger
+from typing import List, Optional
+from decimal import Decimal
+
+from examples.dds import EtlSetting, DDSEtlSettingsRepository
+from lib import PgConnect
+from lib.dict_util import json2str
+from psycopg import Connection
+from psycopg.rows import class_row
+from pydantic import BaseModel
+
+
+class ProductSaleObj(BaseModel):
+    id: int
+    product_id: int
+    order_id: int
+    count: int
+    price: Decimal
+    total_sum: Decimal
+    bonus_payment: Decimal
+    bonus_grant: Decimal
+
+
+class ProductSaleOriginRepository:
+    def __init__(self, pg: PgConnect) -> None:
+        self._db = pg
+
+    def list_product_sales(self, user_threshold: int, limit: int) -> List[ProductSaleObj]:
+        with self._db.client().cursor(row_factory=class_row(ProductSaleObj)) as cur:
+            cur.execute(
+                """
+                   SELECT DISTINCT ON (product_id, order_id)
+                     COALESCE((SELECT MAX(id) FROM dds.fct_product_sales), nextval('dds.fct_product_sales_id_seq')-1) AS id,
+                     product_id,
+                     order_id,
+                     count,
+                     price,
+                     total_sum,
+                     bonus_payment,
+                     bonus_grant
+                   FROM (
+                         WITH bs_ev AS 
+                         (
+                         SELECT
+                           id AS bs_id,
+                           (s.event_value::jsonb ->> 'order_id') AS bs_order_id,
+                           (jsonb_array_elements(s.event_value::jsonb -> 'product_payments') ->> 'product_id') AS bs_product_id,
+                           (jsonb_array_elements(s.event_value::jsonb -> 'product_payments') ->> 'quantity')::numeric AS bs_cnt,
+                           (jsonb_array_elements(s.event_value::jsonb -> 'product_payments') ->> 'price')::numeric AS bs_price,
+                           (jsonb_array_elements(s.event_value::jsonb -> 'product_payments') ->> 'bonus_payment')::numeric AS bonus_payment,
+                           (jsonb_array_elements(s.event_value::jsonb -> 'product_payments') ->> 'bonus_grant')::numeric AS bonus_grant
+                         FROM stg.bonussystem_events s
+                         WHERE s.event_type = 'bonus_transaction'
+                         )
+                        SELECT
+                          p.id AS product_id,
+                          o.id AS order_id,
+                          bs_cnt AS count,
+                          bs_price AS price,
+                          bs_price * bs_cnt AS total_sum,
+                          bonus_payment,
+                          bonus_grant
+                        FROM bs_ev
+                        JOIN dds.dm_orders o ON o.order_key = bs_order_id
+                        JOIN dds.dm_products p ON p.product_id = bs_product_id
+                        ) fct_sales
+                    WHERE EXISTS (
+                               SELECT 1 
+                               FROM dds.fct_product_sales fps 
+                               WHERE 
+                                --fps.product_id = product_id AND fps.order_id = order_id
+                                fps.id = (SELECT MAX(id) FROM dds.fct_product_sales)
+                              )
+                   --WHERE id > %(threshold)s                 
+                   ORDER BY product_id, order_id
+                   --LIMIT %(limit)s
+                 ;
+                """, {
+                    "threshold": user_threshold,
+                    "limit": limit
+                }
+            )
+            objs = cur.fetchall()
+        return objs
+
+
+class ProductSaleDestRepository:
+    def insert_product_sales(self, conn: Connection, ProductSale: ProductSaleObj) -> None:
+        with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO dds.fct_product_sales (id, product_id, order_id, count, price, total_sum, bonus_payment, bonus_grant)
+                    VALUES (%(id)s, %(product_id)s, %(order_id)s, %(count)s, %(price)s, %(total_sum)s, %(bonus_payment)s, %(bonus_grant)s)
+                    ON CONFLICT (id) DO UPDATE
+                    SET 
+                        product_id = EXCLUDED.product_id,
+                        order_id = EXCLUDED.order_id,
+                        count = EXCLUDED.count,
+                        price = EXCLUDED.price,
+                        total_sum = EXCLUDED.total_sum,
+                        bonus_payment = EXCLUDED.bonus_payment,
+                        bonus_grant = EXCLUDED.bonus_grant;
+                    """,
+                    {
+                        "id": ProductSale.id,
+                        "product_id": ProductSale.product_id,
+                        "order_id": ProductSale.order_id,
+                        "count": ProductSale.count,
+                        "price": ProductSale.price,
+                        "total_sum": ProductSale.total_sum,
+                        "bonus_payment": ProductSale.bonus_payment,
+                        "bonus_grant": ProductSale.bonus_grant
+                    }
+                )
+
+
+class DDSProductSaleLoader:
+    WF_KEY = "fct_product_sales_stg_to_dds_workflow"
+    LAST_LOADED_ID_KEY = "last_loaded_id"
+    BATCH_LIMIT = 1000
+
+    def __init__(self, pg_origin: PgConnect, pg_dest: PgConnect, log: Logger) -> None:
+        self.pg_dest = pg_dest
+        self.origin = ProductSaleOriginRepository(pg_origin)
+        self.dds = ProductSaleDestRepository()
+        self.settings_repository = DDSEtlSettingsRepository()
+        self.log = log
+
+    def load_product_sales(self):
+        with self.pg_dest.connection() as conn:
+            wf_setting = self.settings_repository.get_setting(conn, self.WF_KEY)
+            if not wf_setting:
+                wf_setting = EtlSetting(id=0, workflow_key=self.WF_KEY, workflow_settings={self.LAST_LOADED_ID_KEY: -1})
+
+            last_loaded = wf_setting.workflow_settings[self.LAST_LOADED_ID_KEY]
+            load_queue = self.origin.list_product_sales(last_loaded, self.BATCH_LIMIT)
+            self.log.info(f"Found {len(load_queue)} product sales to load.")
+            if not load_queue:
+                self.log.info("Quitting.")
+                return
+
+            for user in load_queue:
+                self.dds.insert_product_sales(conn, user)
+
+            wf_setting.workflow_settings[self.LAST_LOADED_ID_KEY] = max([t.id for t in load_queue])
+            #wf_setting.workflow_settings[self.LAST_LOADED_ID_KEY] = max([t.product_id for t in load_queue])
+            wf_setting_json = json2str(wf_setting.workflow_settings)
+            self.settings_repository.save_setting(conn, wf_setting.workflow_key, wf_setting_json)
+
+            self.log.info(f"Load finished on {wf_setting.workflow_settings[self.LAST_LOADED_ID_KEY]}")
