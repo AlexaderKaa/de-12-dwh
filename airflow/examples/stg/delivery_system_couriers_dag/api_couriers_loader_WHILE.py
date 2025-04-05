@@ -62,14 +62,17 @@ class DeliveryCourierLoader:
                 wf_setting = EtlSetting(id=0, workflow_key=self.WF_KEY, workflow_settings={self.LAST_LOADED_ID_KEY: -1})
 
             last_loaded = wf_setting.workflow_settings[self.LAST_LOADED_ID_KEY]
-            load_queue = self.origin.list_delivery_couriers()
-            self.log.info(f"Found {len(load_queue)} couriers to load.")
-            if not load_queue:
-                self.log.info("Quitting.")
-                return
+            
+            while True:
+                load_queue = self.origin.list_delivery_couriers()
+                self.log.info(f"Found {len(load_queue)} couriers to load.")
+                
+                if not load_queue:
+                    self.log.info("Quitting.")
+                    break
 
-            for delivery_courier in load_queue:
-                self.stg.insert_delivery_courier(conn, delivery_courier)
+                for delivery_courier in load_queue:
+                    self.stg.insert_delivery_courier(conn, delivery_courier)
 
             wf_setting.workflow_settings[self.LAST_LOADED_ID_KEY] = max([t.c_id for t in load_queue])
             wf_setting_json = json2str(wf_setting.workflow_settings)

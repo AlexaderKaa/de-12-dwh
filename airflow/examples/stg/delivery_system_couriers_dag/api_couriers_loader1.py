@@ -16,8 +16,8 @@ class DeliveryCourierObj(BaseModel):
 
 
 class DeliveryCourierOriginRepository:
-    def list_delivery_couriers(self) -> List[DeliveryCourierObj]:
-        couriers_data = FetchDeliveryData('http_conn_id','nikname', 'cohort', endpoint='couriers')
+    def list_delivery_couriers(self, offset: int) -> List[DeliveryCourierObj]:
+        couriers_data = FetchDeliveryData('http_conn_id', 'nikname', 'cohort', endpoint='couriers', offset=offset)
         data = couriers_data.fetch_data()  # Предполагается, что это возвращает список словарей
         # Преобразуем каждый словарь в объект DeliveryCourierObj
         objs = [DeliveryCourierObj(c_id=courier['_id'], c_name=courier['name']) for courier in data]
@@ -46,7 +46,7 @@ class DeliveryCourierDestRepository:
 class DeliveryCourierLoader:
     WF_KEY = "delivery_couriers_origin_to_stg_workflow"
     LAST_LOADED_ID_KEY = "last_loaded_id"
-    BATCH_LIMIT = 100
+    BATCH_LIMIT = 50  # Установим лимит на 50 курьеров за раз
 
     def __init__(self, pg_dest: PgConnect, log: Logger) -> None:
         self.pg_dest = pg_dest
@@ -61,18 +61,26 @@ class DeliveryCourierLoader:
             if not wf_setting:
                 wf_setting = EtlSetting(id=0, workflow_key=self.WF_KEY, workflow_settings={self.LAST_LOADED_ID_KEY: -1})
 
-            last_loaded = wf_setting.workflow_settings[self.LAST_LOADED_ID_KEY]
-            load_queue = self.origin.list_delivery_couriers()
-            self.log.info(f"Found {len(load_queue)} couriers to load.")
-            if not load_queue:
-                self.log.info("Quitting.")
-                return
+            last_loaded = int(wf_setting.workflow_settings[self.LAST_LOADED_ID_KEY])  # Преобразуем в int
+            offset = last_loaded + 1  # Начинаем с последнего загруженного ID + 1
+            
+            while True:
+                load_queue = self.origin.list_delivery_couriers(offset)
+                self.log.info(f"Found {len(load_queue)} couriers to load.")
+                
+                if not load_queue:
+                    self.log.info("No more couriers to load. Quitting.")
+                    break
 
-            for delivery_courier in load_queue:
-                self.stg.insert_delivery_courier(conn, delivery_courier)
+                for delivery_courier in load_queue:
+                    self.stg.insert_delivery_courier(conn, delivery_courier)
 
-            wf_setting.workflow_settings[self.LAST_LOADED_ID_KEY] = max([t.c_id for t in load_queue])
-            wf_setting_json = json2str(wf_setting.workflow_settings)
-            self.settings_repository.save_setting(conn, wf_setting.workflow_key, wf_setting_json)
+                # Обновляем offset для следующей итерации
+                offset += len(load_queue)
+
+            if load_queue:
+                wf_setting.workflow_settings[self.LAST_LOADED_ID_KEY] = max([int(t.c_id) for t in load_queue])
+                wf_setting_json = json2str(wf_setting.workflow_settings)
+                self.settings_repository.save_setting(conn, wf_setting.workflow_key, wf_setting_json)
 
             self.log.info(f"Load finished on {wf_setting.workflow_settings[self.LAST_LOADED_ID_KEY]}")

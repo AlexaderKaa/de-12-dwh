@@ -10,28 +10,14 @@ from psycopg import Connection
 from psycopg.rows import class_row
 from pydantic import BaseModel
 
-"""
-class DeliveryRestaurantObj:
-    def __init__(self, r_id: str, r_name: str):
-        self.r_id = r_id
-        self.r_name = r_name
 
-    def __repr__(self):
-        return f"DeliveryRestaurantObj(id={self.r_id}, name={self.r_name})"
-"""
 class DeliveryRestaurantObj(BaseModel):
     r_id: str
     r_name: str
 
 class DeliveryRestaurantOriginRepository:
-    #def __init__(self, base_url: str, api_key: str):
-    #def __init__(self):
-        #self.base_url = base_url
-        #self.api_key = api_key
-    #http_conn_id = HttpHook.get_connection('http_conn_id')
-    
     def list_delivery_restaurants(self) -> List[DeliveryRestaurantObj]:
-        restaurants_data = FetchDeliveryData('http_conn_id','nikname', 'cohort', endpoint='restaurants')
+        restaurants_data = FetchDeliveryData('http_conn_id', 'nikname', 'cohort', endpoint='restaurants')
         data = restaurants_data.fetch_data()  # Предполагается, что это возвращает список словарей
         # Преобразуем каждый словарь в объект DeliveryRestaurantObj
         objs = [DeliveryRestaurantObj(r_id=restaurant['_id'], r_name=restaurant['name']) for restaurant in data]
@@ -62,10 +48,8 @@ class DeliveryRestaurantLoader:
     LAST_LOADED_ID_KEY = "last_loaded_id"
     BATCH_LIMIT = 1
 
-    #def __init__(self, pg_dest: PgConnect, log: Logger, base_url: str, api_key: str) -> None:
     def __init__(self, pg_dest: PgConnect, log: Logger) -> None:
         self.pg_dest = pg_dest
-        #self.origin = DeliveryRestaurantOriginRepository(base_url, api_key)
         self.origin = DeliveryRestaurantOriginRepository()
         self.stg = DeliveryRestaurantDestRepository()
         self.settings_repository = StgEtlSettingsRepository()
