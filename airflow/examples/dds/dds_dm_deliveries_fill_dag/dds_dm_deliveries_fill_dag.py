@@ -23,7 +23,7 @@ def dds_dm_deliveries_fill_dag():
     origin_pg_connect = ConnectionBuilder.pg_conn("PG_WAREHOUSE_CONNECTION")
 
     # Таск для загрузки данных
-    @task(task_id="dds_load_couriers")
+    @task(task_id="dds_load_deliveries")
     def dds_load_deliveries():
         # Создаем экземпляр DeliveryLoader
         dds_delivery_loader = DDSDeliveryLoader(origin_pg_connect, dwh_pg_connect, log)

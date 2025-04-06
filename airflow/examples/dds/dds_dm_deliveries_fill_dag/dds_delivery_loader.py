@@ -37,7 +37,7 @@ class DeliveriesOriginRepository:
                       , tip_sum::numeric AS order_tip_sum
                     FROM stg.delivery_system_deliveries
                     WHERE delivery_id > %(threshold)s
-                    ORDER BY delivery_id ASC
+                    ORDER BY delivery_id DESC
                     LIMIT %(limit)s;  
                 """, {
                     "threshold": str(user_threshold),  # Преобразуем в строку
