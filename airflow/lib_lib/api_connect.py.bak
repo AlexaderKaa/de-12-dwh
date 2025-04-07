@@ -1,0 +1,65 @@
+import requests
+from airflow.hooks.base import BaseHook
+
+class FetchDeliveryData:
+    def __init__(self, http_conn_id, nickname, cohort, endpoint, sort_field='id', sort_direction='desc', limit=50):
+        self.http_conn_id = http_conn_id
+        self.nickname = nickname
+        self.cohort = cohort
+        self.endpoint = endpoint
+        self.sort_field = sort_field
+        self.sort_direction = sort_direction
+        self.limit = limit
+        self.api_key = self.get_api_key()
+        self.base_url = self.get_base_url()
+
+    def get_api_key(self):
+        connection = BaseHook.get_connection(self.http_conn_id)
+        return connection.extra_dejson.get('api_key')
+
+    def get_base_url(self):
+        connection = BaseHook.get_connection(self.http_conn_id)
+        return connection.host
+
+    def get_api_nickname(self):
+        connection = BaseHook.get_connection(self.http_conn_id)
+        return connection.extra_dejson.get('nickname')
+
+    def get_api_cohort(self):
+        connection = BaseHook.get_connection(self.http_conn_id)
+        return connection.extra_dejson.get('cohort')
+
+    def fetch_data(self, offset=0):
+        try:
+            # Выполняем запрос
+            response = requests.get(
+                f"{self.base_url}/{self.endpoint}?sort_field={self.sort_field}&sort_direction={self.sort_direction}&limit={self.limit}&offset={offset}",
+                headers={
+                    "X-API-KEY": self.api_key,
+                    "X-Nickname": self.nickname,
+                    "X-Cohort": self.cohort
+                }
+            )
+
+            # Проверяем, успешен ли запрос
+            response.raise_for_status()  # Это вызовет исключение для ошибок HTTP
+
+            # Преобразуем ответ в JSON
+            data = response.json()
+
+            # Проверяем, что data не None и является списком
+            if data is None:
+                print("Получен None от API.")
+                return None
+
+            if not isinstance(data, list):
+                print(f"Ожидался список, но получен объект типа {type(data)}: {data}")
+                return None
+
+            print(f"Получено {len(data)} записей на странице с offset {offset}")
+
+            return data
+
+        except requests.exceptions.RequestException as e:
+            print(f"Произошла ошибка при выполнении запроса: {e}")
+            return None
